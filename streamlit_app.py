@@ -9,8 +9,8 @@ import pandas as pd
 
 # Set the title and favicon that appear in the Browser's tab bar.
 st.set_page_config(
-    page_title="Inventory tracker",
-    page_icon=":shopping_bags:",  # This is an emoji shortcode. Could be a URL too.
+    page_title="Bushido Karate Resource Library",
+    page_icon=":martial_arts_uniform:",  # This is an emoji shortcode. Could be a URL too.
 )
 
 
@@ -39,12 +39,10 @@ def initialize_data(conn):
         CREATE TABLE IF NOT EXISTS inventory (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             item_name TEXT,
-            price REAL,
-            units_sold INTEGER,
-            units_left INTEGER,
-            cost_price REAL,
-            reorder_point INTEGER,
-            description TEXT
+            type TEXT,
+            description TEXT,
+            on_loan BOOLEAN,
+            rating REAL
         )
         """
     )
@@ -52,39 +50,17 @@ def initialize_data(conn):
     cursor.execute(
         """
         INSERT INTO inventory
-            (item_name, price, units_sold, units_left, cost_price, reorder_point, description)
+            (item_name, type, description, on_loan, rating)
         VALUES
-            -- Beverages
-            ('Bottled Water (500ml)', 1.50, 115, 15, 0.80, 16, 'Hydrating bottled water'),
-            ('Soda (355ml)', 2.00, 93, 8, 1.20, 10, 'Carbonated soft drink'),
-            ('Energy Drink (250ml)', 2.50, 12, 18, 1.50, 8, 'High-caffeine energy drink'),
-            ('Coffee (hot, large)', 2.75, 11, 14, 1.80, 5, 'Freshly brewed hot coffee'),
-            ('Juice (200ml)', 2.25, 11, 9, 1.30, 5, 'Fruit juice blend'),
-
-            -- Snacks
-            ('Potato Chips (small)', 2.00, 34, 16, 1.00, 10, 'Salted and crispy potato chips'),
-            ('Candy Bar', 1.50, 6, 19, 0.80, 15, 'Chocolate and candy bar'),
-            ('Granola Bar', 2.25, 3, 12, 1.30, 8, 'Healthy and nutritious granola bar'),
-            ('Cookies (pack of 6)', 2.50, 8, 8, 1.50, 5, 'Soft and chewy cookies'),
-            ('Fruit Snack Pack', 1.75, 5, 10, 1.00, 8, 'Assortment of dried fruits and nuts'),
-
-            -- Personal Care
-            ('Toothpaste', 3.50, 1, 9, 2.00, 5, 'Minty toothpaste for oral hygiene'),
-            ('Hand Sanitizer (small)', 2.00, 2, 13, 1.20, 8, 'Small sanitizer bottle for on-the-go'),
-            ('Pain Relievers (pack)', 5.00, 1, 5, 3.00, 3, 'Over-the-counter pain relief medication'),
-            ('Bandages (box)', 3.00, 0, 10, 2.00, 5, 'Box of adhesive bandages for minor cuts'),
-            ('Sunscreen (small)', 5.50, 6, 5, 3.50, 3, 'Small bottle of sunscreen for sun protection'),
-
-            -- Household
-            ('Batteries (AA, pack of 4)', 4.00, 1, 5, 2.50, 3, 'Pack of 4 AA batteries'),
-            ('Light Bulbs (LED, 2-pack)', 6.00, 3, 3, 4.00, 2, 'Energy-efficient LED light bulbs'),
-            ('Trash Bags (small, 10-pack)', 3.00, 5, 10, 2.00, 5, 'Small trash bags for everyday use'),
-            ('Paper Towels (single roll)', 2.50, 3, 8, 1.50, 5, 'Single roll of paper towels'),
-            ('Multi-Surface Cleaner', 4.50, 2, 5, 3.00, 3, 'All-purpose cleaning spray'),
-
-            -- Others
-            ('Lottery Tickets', 2.00, 17, 20, 1.50, 10, 'Assorted lottery tickets'),
-            ('Newspaper', 1.50, 22, 20, 1.00, 5, 'Daily newspaper')
+            -- Books
+            ('Book 1', 'Beverage', 'Chuck Norris Quotes', FALSE, 4.5),
+            ('Book 2', 'Beverage', 'Chuck Norris Wisdom', FALSE, 4.0),
+            ('Book 3', 'Beverage', 'Chuck Norris: The Real Story', FALSE, 4.5),
+            ('Book 4', 'Beverage', 'Chuck Norris on Chuck Norris', FALSE, 4.2),
+            
+            -- DVDs
+            ('DVD 1', 'DVD', 'Description of DVD 1', FALSE, 4.3),
+            ('DVD 2', 'DVD', 'Description of DVD 2', FALSE, 4.4)
         """
     )
     conn.commit()
@@ -105,13 +81,11 @@ def load_data(conn):
         columns=[
             "id",
             "item_name",
-            "price",
-            "units_sold",
-            "units_left",
-            "cost_price",
-            "reorder_point",
+            "type",
             "description",
-        ],
+            "on_loan",
+            "rating",
+        ]
     )
 
     return df
@@ -135,12 +109,10 @@ def update_data(conn, df, changes):
             UPDATE inventory
             SET
                 item_name = :item_name,
-                price = :price,
-                units_sold = :units_sold,
-                units_left = :units_left,
-                cost_price = :cost_price,
-                reorder_point = :reorder_point,
-                description = :description
+                type = :type,
+                description = :description,
+                on_loan = :on_loan,
+                rating = :rating
             WHERE id = :id
             """,
             rows,
@@ -150,9 +122,9 @@ def update_data(conn, df, changes):
         cursor.executemany(
             """
             INSERT INTO inventory
-                (id, item_name, price, units_sold, units_left, cost_price, reorder_point, description)
+                (id, item_name, type, description, on_loan, rating)
             VALUES
-                (:id, :item_name, :price, :units_sold, :units_left, :cost_price, :reorder_point, :description)
+                (:id, :item_name, :type, :description, :on_loan, :rating)
             """,
             (defaultdict(lambda: None, row) for row in changes["added_rows"]),
         )
@@ -171,10 +143,12 @@ def update_data(conn, df, changes):
 
 # Set the title that appears at the top of the page.
 """
-# :shopping_bags: Inventory tracker
+# :martial_arts_uniform: Bushido Karate Resource Library
 
-**Welcome to Alice's Corner Store's intentory tracker!**
-This page reads and writes directly from/to our inventory database.
+**Welcome to Bushio Karate's Resource Library!**
+This site allows club members to browse and search for all the books we have available
+for loaning. Future enhancements will allow a book to be reserved and its current loan
+status to be viewed. For now, just enjoy browsing our collection!
 """
 
 st.info(
@@ -229,13 +203,6 @@ st.button(
 ""
 
 st.subheader("Units left", divider="red")
-
-need_to_reorder = df[df["units_left"] < df["reorder_point"]].loc[:, "item_name"]
-
-if len(need_to_reorder) > 0:
-    items = "\n".join(f"* {name}" for name in need_to_reorder)
-
-    st.error(f"We're running dangerously low on the items below:\n {items}")
 
 ""
 ""
