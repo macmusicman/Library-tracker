@@ -1,194 +1,114 @@
-from collections import defaultdict
-from pathlib import Path
-import sqlite3
+import os
+from decimal import Decimal
+import json
+import requests
 
 import streamlit as st
-import altair as alt
 import pandas as pd
 
 
 # Set the title and favicon that appear in the Browser's tab bar.
 st.set_page_config(
     page_title="Bushido Karate Resource Library",
-    page_icon=":martial_arts_uniform:",  # This is an emoji shortcode. Could be a URL too.
+    page_icon=":martial_arts_uniform:",
 )
 
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+def fetch_data_from_api(api_url: str):
+    """Fetches inventory data from the API Gateway endpoint.
 
-
-def connect_db():
-    """Connects to the sqlite database."""
-
-    DB_FILENAME = Path(__file__).parent / "inventory.db"
-    db_already_exists = DB_FILENAME.exists()
-
-    conn = sqlite3.connect(DB_FILENAME)
-    db_was_just_created = not db_already_exists
-
-    return conn, db_was_just_created
-
-
-def initialize_data(conn):
-    """Initializes the inventory table with some data."""
-    cursor = conn.cursor()
-
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS inventory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            item_name TEXT,
-            type TEXT,
-            description TEXT,
-            on_loan BOOLEAN,
-            rating REAL
-        )
-        """
-    )
-
-    cursor.execute(
-        """
-        INSERT INTO inventory
-            (item_name, type, description, on_loan, rating)
-        VALUES
-            -- Books
-            ('Book 1', 'Beverage', 'Chuck Norris Quotes', FALSE, 4.5),
-            ('Book 2', 'Beverage', 'Chuck Norris Wisdom', FALSE, 4.0),
-            ('Book 3', 'Beverage', 'Chuck Norris: The Real Story', FALSE, 4.5),
-            ('Book 4', 'Beverage', 'Chuck Norris on Chuck Norris', FALSE, 4.2),
-            
-            -- DVDs
-            ('DVD 1', 'DVD', 'Description of DVD 1', FALSE, 4.3),
-            ('DVD 2', 'DVD', 'Description of DVD 2', FALSE, 4.4)
-        """
-    )
-    conn.commit()
-
-
-def load_data(conn):
-    """Loads the inventory data from the database."""
-    cursor = conn.cursor()
-
+    Expects the Lambda to return a JSON array of items with columns:
+    id, item_name, type, description, on_loan, rating
+    """
     try:
-        cursor.execute("SELECT * FROM inventory")
-        data = cursor.fetchall()
-    except:
-        return None
+        resp = requests.get(api_url, timeout=10)
+        resp.raise_for_status()
+        payload = resp.json()
+        # payload can be {'body': '...'} when proxied through API Gateway v1; try to normalize
+        if isinstance(payload, dict) and "body" in payload and isinstance(payload["body"], str):
+            try:
+                payload = json.loads(payload["body"])
+            except Exception:
+                # leave as-is
+                pass
 
-    df = pd.DataFrame(
-        data,
-        columns=[
-            "id",
-            "item_name",
-            "type",
-            "description",
-            "on_loan",
-            "rating",
-        ]
+        df = pd.DataFrame(payload)
+        # If Dynamo stored number types as Decimal, convert them
+        for col in df.columns:
+            if df[col].apply(lambda x: isinstance(x, (Decimal,))).any():
+                df[col] = df[col].apply(lambda x: float(x) if isinstance(x, Decimal) else x)
+
+        return df
+    except Exception as e:
+        st.error(f"Failed to fetch data from API: {e}")
+        return pd.DataFrame(columns=["id", "item_name", "type", "description", "on_loan", "rating"])
+
+
+def main():
+    st.title(":martial_arts_uniform: Bushido Karate Resource Library")
+
+    st.markdown(
+        """
+        Browse the club's resource inventory. The app loads data from an API Gateway endpoint
+        which proxies a Lambda that reads from DynamoDB.
+        """
     )
 
-    return df
+    # Detect API URL from env or ask the user
+    api_url = os.environ.get("API_GATEWAY_URL", "")
+    api_url = st.text_input("API Gateway URL", value=api_url)
+
+    if not api_url:
+        st.info("Enter the API Gateway GET URL (for example: https://<id>.execute-api.<region>.amazonaws.com/prod/inventory)")
+        return
+
+    df = fetch_data_from_api(api_url)
+
+    if df is None or df.empty:
+        st.info("No data available from the API yet.")
+        return
+
+    # Show an editable table for browsing (local edits do not write back to DynamoDB in this example)
+    st.data_editor(
+        df,
+        disabled=["id"],
+        num_rows="fixed",
+        key="inventory_table",
+    )
+
+    st.markdown("---")
+    # Simple UI to toggle on_loan status
+    ids = df["id"].tolist()
+    selected_id = st.selectbox("Select item id to toggle loan status", options=ids)
+    current = df.loc[df["id"] == selected_id, "on_loan"].iloc[0]
+    st.write(f"Current on_loan: {current}")
+
+    if st.button("Toggle loan status"):
+        new_status = not bool(current)
+        try:
+            resp = requests.post(api_url, json={"id": int(selected_id), "on_loan": new_status}, timeout=10)
+            resp.raise_for_status()
+            st.success("Updated")
+            # record in session history
+            if "changes_history" not in st.session_state:
+                st.session_state["changes_history"] = []
+            st.session_state["changes_history"].append({
+                "id": int(selected_id),
+                "old": bool(current),
+                "new": bool(new_status),
+                "when": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+            })
+            # refresh
+            df = fetch_data_from_api(api_url)
+            st.experimental_rerun()
+        except Exception as e:
+            st.error(f"Failed to update: {e}")
 
 
-def update_data(conn, df, changes):
-    """Updates the inventory data in the database."""
-    cursor = conn.cursor()
+if __name__ == "__main__":
+    main()
 
-    if changes["edited_rows"]:
-        deltas = st.session_state.inventory_table["edited_rows"]
-        rows = []
-
-        for i, delta in deltas.items():
-            row_dict = df.iloc[i].to_dict()
-            row_dict.update(delta)
-            rows.append(row_dict)
-
-        cursor.executemany(
-            """
-            UPDATE inventory
-            SET
-                item_name = :item_name,
-                type = :type,
-                description = :description,
-                on_loan = :on_loan,
-                rating = :rating
-            WHERE id = :id
-            """,
-            rows,
-        )
-
-    if changes["added_rows"]:
-        cursor.executemany(
-            """
-            INSERT INTO inventory
-                (id, item_name, type, description, on_loan, rating)
-            VALUES
-                (:id, :item_name, :type, :description, :on_loan, :rating)
-            """,
-            (defaultdict(lambda: None, row) for row in changes["added_rows"]),
-        )
-
-    if changes["deleted_rows"]:
-        cursor.executemany(
-            "DELETE FROM inventory WHERE id = :id",
-            ({"id": int(df.loc[i, "id"])} for i in changes["deleted_rows"]),
-        )
-
-    conn.commit()
-
-
-# -----------------------------------------------------------------------------
-# Draw the actual page, starting with the inventory table.
-
-# Set the title that appears at the top of the page.
-"""
-# :martial_arts_uniform: Bushido Karate Resource Library
-
-**Welcome to Bushio Karate's Resource Library!**
-This site allows club members to browse and search for all the books we have available
-for loaning. Future enhancements will allow a book to be reserved and its current loan
-status to be viewed. For now, just enjoy browsing our collection!
-"""
-
-st.info(
-    """
-    Use the table below to add, remove, and edit items.
-    And don't forget to commit your changes when you're done.
-    """
-)
-
-# Connect to database and create table if needed
-conn, db_was_just_created = connect_db()
-
-# Initialize data.
-if db_was_just_created:
-    initialize_data(conn)
-    st.toast("Database initialized with some sample data.")
-
-# Load data from database
-df = load_data(conn)
-
-# Display data with editable table
-edited_df = st.data_editor(
-    df,
-    disabled=["id"],  # Don't allow editing the 'id' column.
-    num_rows="dynamic",  # Allow appending/deleting rows.
-    column_config={
-        # Show dollar sign before price columns.
-        "price": st.column_config.NumberColumn(format="$%.2f"),
-        "cost_price": st.column_config.NumberColumn(format="$%.2f"),
-    },
-    key="inventory_table",
-)
-
-has_uncommitted_changes = any(len(v) for v in st.session_state.inventory_table.values())
-
-st.button(
-    "Commit changes",
-    type="primary",
-    disabled=not has_uncommitted_changes,
-    # Update data in database
-    on_click=update_data,
-    args=(conn, df, st.session_state.inventory_table),
-)
+    # show history if available
+    if "changes_history" in st.session_state and st.session_state["changes_history"]:
+        st.markdown("## Update history")
+        st.table(pd.DataFrame(st.session_state["changes_history"]))
